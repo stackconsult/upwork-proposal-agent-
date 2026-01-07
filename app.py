@@ -8,6 +8,7 @@ from upwork_agent.slides_render import render_deck_to_slides
 from upwork_agent.pdf_export import export_slides_to_pdf, cleanup_presentation
 from upwork_agent.store import init_db, log_run, get_all_projects, add_project
 from upwork_agent.relevance import score_projects, format_projects_for_gemini
+from upwork_agent.errors import AuthenticationError
 
 # Initialize
 st.set_page_config(page_title="Upwork Proposal Agent", layout="wide")
