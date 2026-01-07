@@ -1,4 +1,4 @@
-import google.genai as genai
+import google.generativeai as genai
 from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic import ValidationError
 from typing import Optional
@@ -63,8 +63,7 @@ Focus on:
         
         response = self.client.generate_content(
             prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
+            generation_config=genai.types.GenerationConfig(
                 temperature=0.3,
             )
         )
@@ -133,8 +132,7 @@ Return ONLY valid JSON matching this schema:
         
         response = self.client.generate_content(
             prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type="application/json",
+            generation_config=genai.types.GenerationConfig(
                 temperature=0.3,
             )
         )
