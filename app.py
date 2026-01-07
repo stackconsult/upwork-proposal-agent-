@@ -41,23 +41,72 @@ with st.sidebar:
     # Google Auth
     st.subheader("Google Cloud Auth")
     _, gcp_json_default = load_secrets()
-    gcp_json = st.text_area(
-        "Google Service Account JSON (paste entire JSON)",
-        value=gcp_json_default or "",
-        height=150,
-        help="Used for Slides & Drive API access. Must include: type, project_id, private_key, client_email"
+    
+    # Let user choose input format
+    auth_format = st.radio(
+        "Choose authentication format:",
+        ["Full JSON (recommended)", "Private Key + Fields"]
     )
     
-    # Validate JSON format if provided
-    if gcp_json:
-        try:
-            import json
-            json.loads(gcp_json)
-            st.success("✅ JSON format is valid")
-        except json.JSONDecodeError:
-            st.error("❌ Invalid JSON format - please check your JSON")
+    if auth_format == "Full JSON (recommended)":
+        gcp_json = st.text_area(
+            "Google Service Account JSON (paste entire JSON)",
+            value=gcp_json_default or "",
+            height=150,
+            help="Used for Slides & Drive API access. Must include: type, project_id, private_key, client_email"
+        )
+        
+        # Validate JSON format if provided
+        if gcp_json:
+            try:
+                import json
+                json.loads(gcp_json)
+                st.success("✅ JSON format is valid")
+            except json.JSONDecodeError:
+                st.error("❌ Invalid JSON format - please check your JSON")
+        
+        # Set additional fields to None for JSON mode
+        project_id = None
+        client_email = None
+        
     else:
-        st.warning("⚠️ Google Service Account JSON is required for PDF generation")
+        st.markdown("**Private Key + Additional Fields**")
+        gcp_json = st.text_area(
+            "Private Key (paste entire key including BEGIN/END lines)",
+            value="",
+            height=120,
+            help="Paste your private key including the -----BEGIN/END----- lines"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            project_id = st.text_input(
+                "Project ID",
+                value="",
+                help="Your Google Cloud project ID"
+            )
+        with col2:
+            client_email = st.text_input(
+                "Client Email",
+                value="",
+                help="Service account email (ends with .gserviceaccount.com)"
+            )
+        
+        # Validate private key format if provided
+        if gcp_json:
+            if '-----BEGIN PRIVATE KEY-----' in gcp_json and '-----END PRIVATE KEY-----' in gcp_json:
+                st.success("✅ Private key format detected")
+            else:
+                st.error("❌ Invalid private key format - must include BEGIN/END lines")
+        
+        # Validate additional fields
+        if project_id and client_email:
+            st.success("✅ All fields provided")
+        elif gcp_json:
+            st.warning("⚠️ Please provide Project ID and Client Email")
+    
+    if not gcp_json:
+        st.warning("⚠️ Google credentials are required for PDF generation")
     
     st.divider()
     
@@ -130,8 +179,14 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
         st.stop()
     
     if not gcp_json:
-        st.error("❌ Please provide Google service account JSON")
+        st.error("❌ Please provide Google credentials")
         st.stop()
+    
+    # Additional validation for private key mode
+    if auth_format == "Private Key + Fields":
+        if not project_id or not client_email:
+            st.error("❌ Please provide Project ID and Client Email when using private key mode")
+            st.stop()
     
     if not job_text.strip():
         st.error("❌ Please paste a job description")
@@ -147,12 +202,12 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
         # Test Google authentication first
         with st.spinner("🔐 Authenticating with Google APIs..."):
             try:
-                slides_service = get_authenticated_slides_service(gcp_json)
-                drive_service = get_authenticated_drive_service(gcp_json)
+                slides_service = get_authenticated_slides_service(gcp_json, project_id, client_email)
+                drive_service = get_authenticated_drive_service(gcp_json, project_id, client_email)
                 st.success("✅ Google authentication successful")
             except AuthenticationError as e:
                 st.error(f"❌ Google authentication failed: {str(e)}")
-                st.error("Please check your service account JSON and ensure it has the correct permissions for Google Slides and Drive APIs.")
+                st.error("Please check your credentials and ensure they have the correct permissions for Google Slides and Drive APIs.")
                 st.stop()
         
         # Step 1: Job Analysis

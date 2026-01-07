@@ -31,18 +31,36 @@ def load_secrets() -> tuple[Optional[str], Optional[str]]:
         gcp_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         return gemini_key, gcp_json
 
-def parse_gcp_json(json_str: str) -> dict:
-    """Parse Google service account JSON string into dict."""
-    if not json_str:
-        raise ValueError("Service account JSON is empty or None")
+def parse_gcp_credentials(credentials_str: str, project_id: str = None, client_email: str = None) -> dict:
+    """Parse Google service account credentials - accepts either JSON string or private key + additional fields."""
+    if not credentials_str:
+        raise ValueError("Service account credentials are empty or None")
     
     try:
         # Handle case where it might be a dict already
-        if isinstance(json_str, dict):
-            return json_str
+        if isinstance(credentials_str, dict):
+            return credentials_str
             
+        # Check if it's just a private key (single line or multi-line)
+        if '-----BEGIN PRIVATE KEY-----' in credentials_str or '-----BEGIN RSA PRIVATE KEY-----' in credentials_str:
+            # This is just the private key - we need additional fields
+            if not project_id or not client_email:
+                raise ValueError("Private key detected. Please provide Project ID and Client Email fields when using a private key.")
+            
+            # Construct full service account JSON
+            creds = {
+                "type": "service_account",
+                "project_id": project_id,
+                "private_key": credentials_str,
+                "client_email": client_email,
+                "client_id": "",  # Can be empty for basic auth
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token"
+            }
+            return creds
+        
         # Try to parse as JSON
-        creds = json.loads(json_str)
+        creds = json.loads(credentials_str)
         
         # Validate required fields
         required_fields = ['type', 'project_id', 'private_key', 'client_email']

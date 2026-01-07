@@ -1,6 +1,6 @@
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
-from upwork_agent.config import parse_gcp_json
+from upwork_agent.config import parse_gcp_credentials
 from upwork_agent.errors import AuthenticationError
 import json
 
@@ -9,23 +9,25 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-def get_authenticated_slides_service(service_account_json: str):
+def get_authenticated_slides_service(credentials_str: str, project_id: str = None, client_email: str = None):
     """
     Build authenticated Google Slides API client.
     Args:
-        service_account_json: JSON string of service account credentials
+        credentials_str: JSON string or private key of service account credentials
+        project_id: Required if using private key only
+        client_email: Required if using private key only
     """
     try:
-        # Debug: Print first 50 chars of JSON to verify it's being passed
-        print(f"DEBUG: Service account JSON (first 50 chars): {service_account_json[:50] if service_account_json else 'None'}")
+        # Debug: Print first 50 chars of credentials to verify it's being passed
+        print(f"DEBUG: Credentials (first 50 chars): {credentials_str[:50] if credentials_str else 'None'}")
         
-        creds_dict = parse_gcp_json(service_account_json)
+        creds_dict = parse_gcp_credentials(credentials_str, project_id, client_email)
         
         # Debug: Verify required fields exist
         required_fields = ['type', 'project_id', 'private_key', 'client_email']
         for field in required_fields:
             if field not in creds_dict:
-                raise AuthenticationError(f"Missing required field '{field}' in service account JSON")
+                raise AuthenticationError(f"Missing required field '{field}' in service account credentials")
         
         print(f"DEBUG: Service account email: {creds_dict.get('client_email')}")
         print(f"DEBUG: Project ID: {creds_dict.get('project_id')}")
@@ -45,27 +47,29 @@ def get_authenticated_slides_service(service_account_json: str):
     except json.JSONDecodeError as e:
         raise AuthenticationError(f"Invalid JSON format in service account credentials: {e}")
     except KeyError as e:
-        raise AuthenticationError(f"Missing required field in service account JSON: {e}")
+        raise AuthenticationError(f"Missing required field in service account credentials: {e}")
     except Exception as e:
         raise AuthenticationError(f"Failed to authenticate Slides API: {e}")
 
-def get_authenticated_drive_service(service_account_json: str):
+def get_authenticated_drive_service(credentials_str: str, project_id: str = None, client_email: str = None):
     """
     Build authenticated Google Drive API client.
     Args:
-        service_account_json: JSON string of service account credentials
+        credentials_str: JSON string or private key of service account credentials
+        project_id: Required if using private key only
+        client_email: Required if using private key only
     """
     try:
-        # Debug: Print first 50 chars of JSON to verify it's being passed
-        print(f"DEBUG: Service account JSON (first 50 chars): {service_account_json[:50] if service_account_json else 'None'}")
+        # Debug: Print first 50 chars of credentials to verify it's being passed
+        print(f"DEBUG: Credentials (first 50 chars): {credentials_str[:50] if credentials_str else 'None'}")
         
-        creds_dict = parse_gcp_json(service_account_json)
+        creds_dict = parse_gcp_credentials(credentials_str, project_id, client_email)
         
         # Debug: Verify required fields exist
         required_fields = ['type', 'project_id', 'private_key', 'client_email']
         for field in required_fields:
             if field not in creds_dict:
-                raise AuthenticationError(f"Missing required field '{field}' in service account JSON")
+                raise AuthenticationError(f"Missing required field '{field}' in service account credentials")
         
         print(f"DEBUG: Service account email: {creds_dict.get('client_email')}")
         print(f"DEBUG: Project ID: {creds_dict.get('project_id')}")
@@ -85,6 +89,6 @@ def get_authenticated_drive_service(service_account_json: str):
     except json.JSONDecodeError as e:
         raise AuthenticationError(f"Invalid JSON format in service account credentials: {e}")
     except KeyError as e:
-        raise AuthenticationError(f"Missing required field in service account JSON: {e}")
+        raise AuthenticationError(f"Missing required field in service account credentials: {e}")
     except Exception as e:
         raise AuthenticationError(f"Failed to authenticate Drive API: {e}")
