@@ -1,7 +1,8 @@
-import google.generativeai as genai
+import google.genai as genai
 from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic import ValidationError
 from typing import Optional
+import json
 from upwork_agent.schemas import (
     JobAnalysis, SlideDeckSpec,
     get_job_analysis_schema, get_slide_deck_schema
@@ -22,6 +23,20 @@ class GeminiClient:
         self.model_name = model_name
         genai.configure(api_key=api_key)
         self.client = genai.GenerativeModel(model_name)
+    
+    def _parse_json_response(self, response_text: str):
+        """Extract JSON from response text."""
+        try:
+            # Try to parse the response directly
+            return json.loads(response_text)
+        except json.JSONDecodeError:
+            # Try to extract JSON from the response
+            import re
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                return json.loads(json_match.group())
+            else:
+                raise ValueError(f"Could not extract JSON from response: {response_text[:200]}...")
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate_job_analysis(self, job_text: str) -> JobAnalysis:
@@ -48,16 +63,18 @@ Focus on:
         
         response = self.client.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
+            generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                response_schema=get_job_analysis_schema(),
+                temperature=0.3,
             )
         )
         
         try:
-            return JobAnalysis.model_validate_json(response.text)
-        except ValidationError as e:
-            raise GeminiClientError(f"Job analysis validation failed: {e}")
+            response_text = response.text
+            parsed_json = self._parse_json_response(response_text)
+            return JobAnalysis.model_validate(parsed_json)
+        except (ValidationError, ValueError, AttributeError) as e:
+            raise GeminiClientError(f"Failed to parse job analysis: {str(e)}")
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate_slide_deck(
@@ -116,16 +133,18 @@ Return ONLY valid JSON matching this schema:
         
         response = self.client.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
+            generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                response_schema=get_slide_deck_schema(),
+                temperature=0.3,
             )
         )
         
         try:
-            return SlideDeckSpec.model_validate_json(response.text)
-        except ValidationError as e:
-            raise GeminiClientError(f"Slide deck validation failed: {e}")
+            response_text = response.text
+            parsed_json = self._parse_json_response(response_text)
+            return SlideDeckSpec.model_validate(parsed_json)
+        except (ValidationError, ValueError, AttributeError) as e:
+            raise GeminiClientError(f"Failed to parse slide deck: {str(e)}")
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate_cover_letter(
