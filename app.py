@@ -1,6 +1,5 @@
 import streamlit as st
 import hashlib
-from datetime import datetime
 from upwork_agent.config import load_secrets
 from upwork_agent.gemini_client import GeminiClient, GeminiClientError
 from upwork_agent.store import init_db, log_run, get_all_projects, add_project
@@ -74,78 +73,6 @@ with st.sidebar:
                 st.write(f"**Description:** {project['description']}")
                 st.write(f"**Tech:** {', '.join(project['tech_tags'])}")
                 st.write(f"**Outcomes:** {project['outcomes']}")
-
-    # Google Auth
-    st.subheader("Google Cloud Auth")
-    _, gcp_json_default = load_secrets()
-    
-    # Let user choose input format
-    auth_format = st.radio(
-        "Choose authentication format:",
-        ["Full JSON (recommended)", "Private Key + Fields"]
-    )
-    
-    if auth_format == "Full JSON (recommended)":
-        gcp_json = st.text_area(
-            "Google Service Account JSON (paste entire JSON)",
-            value=gcp_json_default or "",
-            height=150,
-            help="Used for Slides & Drive API access. Must include: type, project_id, private_key, client_email"
-        )
-        
-        # Validate JSON format if provided
-        if gcp_json:
-            try:
-                import json
-                json.loads(gcp_json)
-                st.success("✅ JSON format is valid")
-            except json.JSONDecodeError:
-                st.error("❌ Invalid JSON format - please check your JSON")
-        
-        # Set additional fields to None for JSON mode
-        project_id = None
-        client_email = None
-        
-    else:
-        st.markdown("**Private Key + Additional Fields**")
-        gcp_json = st.text_area(
-            "Private Key (paste entire key including BEGIN/END lines)",
-            value="",
-            height=120,
-            help="Paste your private key including the -----BEGIN/END----- lines"
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            project_id = st.text_input(
-                "Project ID",
-                value="",
-                help="Your Google Cloud project ID"
-            )
-        with col2:
-            client_email = st.text_input(
-                "Client Email",
-                value="",
-                help="Service account email (ends with .gserviceaccount.com)"
-            )
-        
-        # Validate private key format if provided
-        if gcp_json:
-            if '-----BEGIN PRIVATE KEY-----' in gcp_json and '-----END PRIVATE KEY-----' in gcp_json:
-                st.success("✅ Private key format detected")
-            else:
-                st.error("❌ Invalid private key format - must include BEGIN/END lines")
-        
-        # Validate additional fields
-        if project_id and client_email:
-            st.success("✅ All fields provided")
-        elif gcp_json:
-            st.warning("⚠️ Please provide Project ID and Client Email")
-    
-    if not gcp_json:
-        st.warning("⚠️ Google credentials are required for PDF generation")
-    
-    st.divider()
 
 # Main Interface
 col1, col2, col3 = st.columns([1.2, 1.2, 1.2])
