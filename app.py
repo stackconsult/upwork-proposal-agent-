@@ -3,12 +3,8 @@ import hashlib
 from datetime import datetime
 from upwork_agent.config import load_secrets
 from upwork_agent.gemini_client import GeminiClient, GeminiClientError
-from upwork_agent.google_auth import get_authenticated_slides_service, get_authenticated_drive_service
-from upwork_agent.slides_render import render_deck_to_slides
-from upwork_agent.pdf_export import export_slides_to_pdf, cleanup_presentation
 from upwork_agent.store import init_db, log_run, get_all_projects, add_project
 from upwork_agent.relevance import score_projects, format_projects_for_gemini
-from upwork_agent.errors import AuthenticationError
 
 # Initialize
 st.set_page_config(page_title="Upwork Proposal Agent", layout="wide")
@@ -22,22 +18,63 @@ init_db()
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    # Gemini Model Selection
-    st.subheader("Gemini Configuration")
+    # Gemini API Key
+    gemini_api_key_default, _ = load_secrets()
     gemini_api_key = st.text_input(
-        "Your Gemini API Key",
+        "Gemini API Key",
+        value=gemini_api_key_default or "",
         type="password",
-        help="Get it from https://ai.google.dev/api-keys"
+        help="Your Google Gemini API key"
     )
     
+    # Model Selection
     gemini_models = [
-        "gemini-2.0-flash",
         "gemini-2.5-flash",
+        "gemini-2.0-flash", 
         "gemini-1.5-flash",
         "gemini-1.5-pro",
     ]
     selected_model = st.selectbox("Select Gemini Model", gemini_models)
     
+    st.divider()
+    
+    # Digital Twin Management
+    st.subheader("📚 Your Digital Twin")
+    st.markdown("*Store your projects for relevance matching*")
+    
+    with st.expander("Add/Edit Projects"):
+        project_name = st.text_input("Project Name", key="project_name")
+        project_desc = st.text_area("Description", key="project_desc")
+        project_techs = st.text_input("Tech Tags (comma-separated)", key="project_techs")
+        project_outcomes = st.text_area("Outcomes/Results", key="project_outcomes")
+        project_vertical = st.text_input("Vertical/Industry", key="project_vertical")
+        project_link = st.text_input("Portfolio Link", key="project_link")
+        
+        if st.button("💾 Save Project", key="save_project"):
+            if project_name and project_desc and project_techs and project_outcomes:
+                add_project(
+                    name=project_name,
+                    description=project_desc,
+                    tech_tags=[t.strip() for t in project_techs.split(",")],
+                    outcomes=project_outcomes,
+                    vertical=project_vertical,
+                    portfolio_link=project_link
+                )
+                st.success("✅ Project saved!")
+                st.rerun()
+            else:
+                st.error("❌ Please fill in required fields")
+    
+    # Show existing projects
+    projects = get_all_projects()
+    if projects:
+        st.subheader("📋 Existing Projects")
+        for project in projects:
+            with st.expander(f"📁 {project['name']}"):
+                st.write(f"**Description:** {project['description']}")
+                st.write(f"**Tech:** {', '.join(project['tech_tags'])}")
+                st.write(f"**Outcomes:** {project['outcomes']}")
+
     # Google Auth
     st.subheader("Google Cloud Auth")
     _, gcp_json_default = load_secrets()
@@ -109,41 +146,6 @@ with st.sidebar:
         st.warning("⚠️ Google credentials are required for PDF generation")
     
     st.divider()
-    
-    # Digital Twin Management
-    st.subheader("📚 Your Digital Twin")
-    st.markdown("*Store your projects for relevance matching*")
-    
-    with st.expander("Add/Edit Projects"):
-        project_name = st.text_input("Project Name", key="project_name")
-        project_desc = st.text_area("Description", key="project_desc")
-        project_techs = st.text_input("Tech Tags (comma-separated)", key="project_techs")
-        project_outcomes = st.text_area("Outcomes & Metrics", key="project_outcomes")
-        project_vertical = st.text_input("Vertical/Industry (optional)", key="project_vertical")
-        project_link = st.text_input("Portfolio Link (optional)", key="project_link")
-        
-        if st.button("➕ Add Project", key="add_project"):
-            if project_name and project_desc and project_outcomes:
-                tech_list = [t.strip() for t in project_techs.split(",")]
-                add_project(
-                    name=project_name,
-                    description=project_desc,
-                    tech_tags=tech_list,
-                    outcomes=project_outcomes,
-                    vertical=project_vertical if project_vertical else None,
-                    portfolio_link=project_link if project_link else None
-                )
-                st.success("Project added!")
-                st.rerun()
-            else:
-                st.error("Please fill in required fields")
-    
-    # Show existing projects
-    projects = get_all_projects()
-    if projects:
-        st.markdown(f"**Stored Projects: {len(projects)}**")
-        for proj in projects:
-            st.caption(f"• {proj['name']}")
 
 # Main Interface
 col1, col2, col3 = st.columns([1.2, 1.2, 1.2])
@@ -178,16 +180,6 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
         st.error("❌ Please provide your Gemini API key")
         st.stop()
     
-    if not gcp_json:
-        st.error("❌ Please provide Google credentials")
-        st.stop()
-    
-    # Additional validation for private key mode
-    if auth_format == "Private Key + Fields":
-        if not project_id or not client_email:
-            st.error("❌ Please provide Project ID and Client Email when using private key mode")
-            st.stop()
-    
     if not job_text.strip():
         st.error("❌ Please paste a job description")
         st.stop()
@@ -196,19 +188,8 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
     st.session_state.generating = True
     
     try:
-        # Initialize clients
+        # Initialize Gemini client
         gemini_client = GeminiClient(api_key=gemini_api_key, model_name=selected_model)
-        
-        # Test Google authentication first
-        with st.spinner("🔐 Authenticating with Google APIs..."):
-            try:
-                slides_service = get_authenticated_slides_service(gcp_json, project_id, client_email)
-                drive_service = get_authenticated_drive_service(gcp_json, project_id, client_email)
-                st.success("✅ Google authentication successful")
-            except AuthenticationError as e:
-                st.error(f"❌ Google authentication failed: {str(e)}")
-                st.error("Please check your credentials and ensure they have the correct permissions for Google Slides and Drive APIs.")
-                st.stop()
         
         # Step 1: Job Analysis
         with st.spinner("🔍 Analyzing job posting..."):
@@ -220,91 +201,80 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
         
         # Step 2: Project Relevance Matching
         with st.spinner("🎯 Finding relevant projects..."):
-            scored = score_projects(job_analysis)
-            relevant_projects = format_projects_for_gemini(scored)
+            scored_projects = score_projects(job_analysis)
+            relevant_projects = format_projects_for_gemini(scored_projects)
         
         # Step 3: Generate Slide Deck
-        with st.spinner("🎨 Generating slide content..."):
-            tone_for_slides = None if tone_override == "Auto-detect" else tone_override
-            slide_deck_spec = gemini_client.generate_slide_deck(
+        tone = None if tone_override == "Auto-detect" else tone_override.lower()
+        with st.spinner("📊 Creating proposal slides..."):
+            slide_deck = gemini_client.generate_slide_deck(
                 job_analysis, 
-                relevant_projects,
-                tone_override=tone_for_slides
+                relevant_projects, 
+                tone_override=tone
             )
         
-        # Step 4: Render to Google Slides
-        with st.spinner("📊 Building Google Slides..."):
-            presentation_id = render_deck_to_slides(slide_deck_spec, slides_service)
-        
-        # Step 5: Export to PDF
-        with st.spinner("📥 Exporting to PDF..."):
-            pdf_bytes = export_slides_to_pdf(presentation_id, drive_service)
-            cleanup_presentation(presentation_id, drive_service)
-        
-        # Step 6: Generate Cover Letter
+        # Step 4: Generate Cover Letter
         with st.spinner("✍️ Writing cover letter..."):
             cover_letter = gemini_client.generate_cover_letter(job_analysis, relevant_projects)
         
-        # Step 7: Auto-generate Screening Answers
-        with st.spinner("❓ Generating screening answers..."):
-            screening_answers = gemini_client.generate_screening_answers(job_analysis)
+        # Step 5: Generate Screening Answers
+        screening_answers = gemini_client.generate_screening_answers(job_analysis)
         
         # Display Results
         with col2:
             with placeholder_cover.container():
-                st.markdown("**Cover Letter:**")
-                st.text_area("", value=cover_letter, height=150, disabled=True)
+                st.subheader("📝 Cover Letter")
+                st.text_area("", cover_letter, height=200, disabled=True)
                 
-                st.markdown("**Screening Answers:**")
-                for q, a in screening_answers.items():
-                    st.text_area(f"Q: {q}", value=a, height=80, disabled=True)
+                st.subheader("❓ Common Screening Answers")
+                for question, answer in screening_answers.items():
+                    st.write(f"**Q:** {question}")
+                    st.write(f"**A:** {answer}")
+                    st.write("---")
         
-        # PDF Download
         with col3:
-            st.markdown("**📥 Download Proposal PDF**")
-            st.download_button(
-                label="⬇️ Download PDF",
-                data=pdf_bytes,
-                file_name=f"upwork_proposal_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                mime="application/pdf"
-            )
-            
-            st.success("✅ Proposal generated successfully!")
+            with placeholder_pdf.container():
+                st.subheader("📊 Slide Deck Content")
+                
+                # Display slides as formatted text
+                for i, slide in enumerate(slide_deck.slides, 1):
+                    st.write(f"### Slide {i}: {slide.title}")
+                    for bullet in slide.content:
+                        st.write(f"- {bullet}")
+                    st.write("---")
+                
+                # Download as text file
+                slide_text = f"PROPOSAL: {slide_deck.presentation_title}\n\n"
+                slide_text += f"CLIENT ANALYSIS:\n{job_analysis.model_dump_json(indent=2)}\n\n"
+                slide_text += f"COVER LETTER:\n{cover_letter}\n\n"
+                slide_text += "SLIDES:\n"
+                for i, slide in enumerate(slide_deck.slides, 1):
+                    slide_text += f"\n--- SLIDE {i}: {slide.title} ---\n"
+                    slide_text += "\n".join([f"- {bullet}" for bullet in slide.content])
+                    slide_text += "\n"
+                
+                st.download_button(
+                    label="📥 Download Proposal (Text)",
+                    data=slide_text,
+                    file_name=f"proposal_{hashlib.md5(job_text.encode()).hexdigest()[:8]}.txt",
+                    mime="text/plain"
+                )
         
-        # Log Run
-        job_hash = hashlib.md5(job_text.encode()).hexdigest()
-        log_run(
-            job_text_hash=job_hash,
-            job_analysis_json=job_analysis.model_dump_json(),
-            proposal_json=slide_deck_spec.model_dump_json(),
-            model_name=selected_model,
-            presentation_id=presentation_id,
-            status="success"
-        )
-    
+        # Log the run
+        log_run(job_text[:500], slide_deck.presentation_title, "success")
+        
+        st.success("✅ Proposal generated successfully!")
+        st.session_state.generating = False
+        
     except GeminiClientError as e:
-        st.error(f"❌ Gemini Error: {e}")
-        log_run(
-            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
-            job_analysis_json="",
-            proposal_json="",
-            model_name=selected_model,
-            presentation_id="",
-            status="failed",
-            error_message=str(e)
-        )
+        st.error(f"❌ Gemini API Error: {str(e)}")
+        log_run(job_text[:500], "Failed", f"Gemini Error: {str(e)}")
+        st.session_state.generating = False
     
     except Exception as e:
-        st.error(f"❌ Unexpected Error: {e}")
-        log_run(
-            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
-            job_analysis_json="",
-            proposal_json="",
-            model_name=selected_model,
-            presentation_id="",
-            status="failed",
-            error_message=str(e)
-        )
+        st.error(f"❌ Unexpected Error: {str(e)}")
+        log_run(job_text[:500], "Failed", f"Unexpected Error: {str(e)}")
+        st.session_state.generating = False
     
     finally:
         st.session_state.generating = False
