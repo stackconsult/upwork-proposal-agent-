@@ -10,8 +10,12 @@ st.set_page_config(page_title="Upwork Proposal Agent", layout="wide")
 st.title("🚀 Upwork Proposal Agent")
 st.markdown("*Powered by Gemini AI | Generate polished proposals in minutes*")
 
-# Initialize database
+# Initialize database and session state
 init_db()
+
+# Initialize session state
+if "generating" not in st.session_state:
+    st.session_state.generating = False
 
 # Sidebar: Settings + Project Management
 with st.sidebar:
@@ -92,19 +96,26 @@ with col1:
 
 with col2:
     st.subheader("🧠 Proposal Analysis")
-    placeholder_analysis = st.empty()
-    placeholder_cover = st.empty()
 
 with col3:
-    st.subheader("📄 PDF Output")
-    placeholder_pdf = st.empty()
+    st.subheader("📄 Proposal Output")
 
 # Generate Button
 st.divider()
-if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
+
+# Create placeholders for results
+placeholder_analysis = st.empty()
+placeholder_cover = st.empty()
+placeholder_pdf = st.empty()
+
+if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=st.session_state.generating):
     # Validation
     if not gemini_api_key:
         st.error("❌ Please provide your Gemini API key")
+        st.stop()
+    
+    if not gemini_api_key.strip().startswith("AIza"):
+        st.error("❌ Invalid Gemini API key format - should start with 'AIza'")
         st.stop()
     
     if not job_text.strip():
@@ -122,14 +133,18 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
         with st.spinner("🔍 Analyzing job posting..."):
             job_analysis = gemini_client.generate_job_analysis(job_text)
         
-        with col2:
-            with placeholder_analysis.container():
-                st.json(job_analysis.model_dump(), expanded=False)
+        with placeholder_analysis.container():
+            st.subheader("🧠 Job Analysis")
+            st.json(job_analysis.model_dump(), expanded=False)
         
-        # Step 2: Project Relevance Matching
+        # Step 2: Project Relevance Matching (with error handling)
         with st.spinner("🎯 Finding relevant projects..."):
-            scored_projects = score_projects(job_analysis)
-            relevant_projects = format_projects_for_gemini(scored_projects)
+            try:
+                scored_projects = score_projects(job_analysis)
+                relevant_projects = format_projects_for_gemini(scored_projects)
+            except Exception as e:
+                st.warning(f"⚠️ Project matching failed: {str(e)} - using generic approach")
+                relevant_projects = ["No specific projects available - will create general proposal"]
         
         # Step 3: Generate Slide Deck
         tone = None if tone_override == "Auto-detect" else tone_override.lower()
@@ -148,60 +163,54 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
         screening_answers = gemini_client.generate_screening_answers(job_analysis)
         
         # Display Results
-        with col2:
-            with placeholder_cover.container():
-                st.subheader("📝 Cover Letter")
-                st.text_area("", cover_letter, height=200, disabled=True)
-                
-                st.subheader("❓ Common Screening Answers")
-                for question, answer in screening_answers.items():
-                    st.write(f"**Q:** {question}")
-                    st.write(f"**A:** {answer}")
-                    st.write("---")
+        with placeholder_cover.container():
+            st.subheader("📝 Cover Letter")
+            st.text_area("", cover_letter, height=200, disabled=True)
+            
+            st.subheader("❓ Common Screening Answers")
+            for question, answer in screening_answers.items():
+                st.write(f"**Q:** {question}")
+                st.write(f"**A:** {answer}")
+                st.write("---")
         
-        with col3:
-            with placeholder_pdf.container():
-                st.subheader("📊 Slide Deck Content")
-                
-                # Display slides as formatted text
-                for i, slide in enumerate(slide_deck.slides, 1):
-                    st.write(f"### Slide {i}: {slide.title}")
-                    for bullet in slide.content:
-                        st.write(f"- {bullet}")
-                    st.write("---")
-                
-                # Download as text file
-                slide_text = f"PROPOSAL: {slide_deck.presentation_title}\n\n"
-                slide_text += f"CLIENT ANALYSIS:\n{job_analysis.model_dump_json(indent=2)}\n\n"
-                slide_text += f"COVER LETTER:\n{cover_letter}\n\n"
-                slide_text += "SLIDES:\n"
-                for i, slide in enumerate(slide_deck.slides, 1):
-                    slide_text += f"\n--- SLIDE {i}: {slide.title} ---\n"
-                    slide_text += "\n".join([f"- {bullet}" for bullet in slide.content])
-                    slide_text += "\n"
-                
-                st.download_button(
-                    label="📥 Download Proposal (Text)",
-                    data=slide_text,
-                    file_name=f"proposal_{hashlib.md5(job_text.encode()).hexdigest()[:8]}.txt",
-                    mime="text/plain"
-                )
+        with placeholder_pdf.container():
+            st.subheader("📊 Slide Deck Content")
+            
+            # Display slides as formatted text
+            for i, slide in enumerate(slide_deck.slides, 1):
+                st.write(f"### Slide {i}: {slide.title}")
+                for bullet in slide.content:
+                    st.write(f"- {bullet}")
+                st.write("---")
+            
+            # Download as text file
+            slide_text = f"PROPOSAL: {slide_deck.presentation_title}\n\n"
+            slide_text += f"CLIENT ANALYSIS:\n{job_analysis.model_dump_json(indent=2)}\n\n"
+            slide_text += f"COVER LETTER:\n{cover_letter}\n\n"
+            slide_text += "SLIDES:\n"
+            for i, slide in enumerate(slide_deck.slides, 1):
+                slide_text += f"\n--- SLIDE {i}: {slide.title} ---\n"
+                slide_text += "\n".join([f"- {bullet}" for bullet in slide.content])
+                slide_text += "\n"
+            
+            st.download_button(
+                label="📥 Download Proposal (Text)",
+                data=slide_text,
+                file_name=f"proposal_{hashlib.md5(job_text.encode()).hexdigest()[:8]}.txt",
+                mime="text/plain"
+            )
         
         # Log the run
         log_run(job_text[:500], slide_deck.presentation_title, "success")
         
         st.success("✅ Proposal generated successfully!")
-        st.session_state.generating = False
         
     except GeminiClientError as e:
         st.error(f"❌ Gemini API Error: {str(e)}")
         log_run(job_text[:500], "Failed", f"Gemini Error: {str(e)}")
-        st.session_state.generating = False
-    
     except Exception as e:
         st.error(f"❌ Unexpected Error: {str(e)}")
         log_run(job_text[:500], "Failed", f"Unexpected Error: {str(e)}")
-        st.session_state.generating = False
     
     finally:
         st.session_state.generating = False
