@@ -165,7 +165,7 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
         # Display Results
         with placeholder_cover.container():
             st.subheader("📝 Cover Letter")
-            st.text_area("", cover_letter, height=200, disabled=True)
+            st.text_area("Cover Letter", cover_letter, height=200, disabled=True)
             
             st.subheader("❓ Common Screening Answers")
             for question, answer in screening_answers.items():
@@ -179,8 +179,8 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
             # Display slides as formatted text
             for i, slide in enumerate(slide_deck.slides, 1):
                 st.write(f"### Slide {i}: {slide.title}")
-                for bullet in slide.content:
-                    st.write(f"- {bullet}")
+                for section in slide.sections:
+                    st.write(f"- {section.content}")
                 st.write("---")
             
             # Download as text file
@@ -190,7 +190,8 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
             slide_text += "SLIDES:\n"
             for i, slide in enumerate(slide_deck.slides, 1):
                 slide_text += f"\n--- SLIDE {i}: {slide.title} ---\n"
-                slide_text += "\n".join([f"- {bullet}" for bullet in slide.content])
+                for section in slide.sections:
+                    slide_text += f"- {section.content}\n"
                 slide_text += "\n"
             
             st.download_button(
@@ -201,16 +202,39 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
             )
         
         # Log the run
-        log_run(job_text[:500], slide_deck.presentation_title, "success")
+        log_run(
+            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
+            job_analysis_json=job_analysis.model_dump_json(),
+            proposal_json=slide_deck.model_dump_json(),
+            model_name=selected_model,
+            presentation_id="",
+            status="success"
+        )
         
         st.success("✅ Proposal generated successfully!")
         
     except GeminiClientError as e:
         st.error(f"❌ Gemini API Error: {str(e)}")
-        log_run(job_text[:500], "Failed", f"Gemini Error: {str(e)}")
+        log_run(
+            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
+            job_analysis_json="",
+            proposal_json="",
+            model_name=selected_model,
+            presentation_id="",
+            status="failed",
+            error_message=str(e)
+        )
     except Exception as e:
         st.error(f"❌ Unexpected Error: {str(e)}")
-        log_run(job_text[:500], "Failed", f"Unexpected Error: {str(e)}")
+        log_run(
+            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
+            job_analysis_json="",
+            proposal_json="",
+            model_name=selected_model,
+            presentation_id="",
+            status="failed",
+            error_message=str(e)
+        )
     
     finally:
         st.session_state.generating = False
