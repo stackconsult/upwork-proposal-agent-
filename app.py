@@ -44,8 +44,19 @@ with st.sidebar:
         "Google Service Account JSON (paste entire JSON)",
         value=gcp_json_default or "",
         height=150,
-        help="Used for Slides & Drive API access"
+        help="Used for Slides & Drive API access. Must include: type, project_id, private_key, client_email"
     )
+    
+    # Validate JSON format if provided
+    if gcp_json:
+        try:
+            import json
+            json.loads(gcp_json)
+            st.success("✅ JSON format is valid")
+        except json.JSONDecodeError:
+            st.error("❌ Invalid JSON format - please check your JSON")
+    else:
+        st.warning("⚠️ Google Service Account JSON is required for PDF generation")
     
     st.divider()
     
@@ -131,8 +142,17 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate"):
     try:
         # Initialize clients
         gemini_client = GeminiClient(api_key=gemini_api_key, model_name=selected_model)
-        slides_service = get_authenticated_slides_service(gcp_json)
-        drive_service = get_authenticated_drive_service(gcp_json)
+        
+        # Test Google authentication first
+        with st.spinner("🔐 Authenticating with Google APIs..."):
+            try:
+                slides_service = get_authenticated_slides_service(gcp_json)
+                drive_service = get_authenticated_drive_service(gcp_json)
+                st.success("✅ Google authentication successful")
+            except AuthenticationError as e:
+                st.error(f"❌ Google authentication failed: {str(e)}")
+                st.error("Please check your service account JSON and ensure it has the correct permissions for Google Slides and Drive APIs.")
+                st.stop()
         
         # Step 1: Job Analysis
         with st.spinner("🔍 Analyzing job posting..."):

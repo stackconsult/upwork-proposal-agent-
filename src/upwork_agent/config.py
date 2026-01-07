@@ -33,7 +33,24 @@ def load_secrets() -> tuple[Optional[str], Optional[str]]:
 
 def parse_gcp_json(json_str: str) -> dict:
     """Parse Google service account JSON string into dict."""
+    if not json_str:
+        raise ValueError("Service account JSON is empty or None")
+    
     try:
-        return json.loads(json_str)
+        # Handle case where it might be a dict already
+        if isinstance(json_str, dict):
+            return json_str
+            
+        # Try to parse as JSON
+        creds = json.loads(json_str)
+        
+        # Validate required fields
+        required_fields = ['type', 'project_id', 'private_key', 'client_email']
+        missing_fields = [field for field in required_fields if field not in creds]
+        if missing_fields:
+            raise ValueError(f"Missing required fields: {missing_fields}")
+        
+        return creds
+        
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid Google service account JSON: {e}")
+        raise ValueError(f"Invalid JSON format in service account credentials: {e}")
