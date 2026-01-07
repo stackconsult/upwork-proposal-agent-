@@ -41,7 +41,7 @@ def get_authenticated_slides_service(credentials_str: str, project_id: str = Non
         print(f"DEBUG: Credentials created, valid: {credentials.valid}")
         
         service = build("slides", "v1", credentials=credentials)
-        print(f"DEBUG: Slides service created successfully")
+        print("DEBUG: Slides service created successfully")
         return service
         
     except json.JSONDecodeError as e:
@@ -83,7 +83,7 @@ def get_authenticated_drive_service(credentials_str: str, project_id: str = None
         print(f"DEBUG: Credentials created, valid: {credentials.valid}")
         
         service = build("drive", "v3", credentials=credentials)
-        print(f"DEBUG: Drive service created successfully")
+        print("DEBUG: Drive service created successfully")
         return service
         
     except json.JSONDecodeError as e:
