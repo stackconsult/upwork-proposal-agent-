@@ -23,6 +23,25 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.poetry]
+name = "upwork-proposal-agent"
+version = "1.0.0"
+description = "Gemini-powered Upwork proposal generator"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.11"
+streamlit = "^1.28.0"
+pydantic = "^2.0.0"
+pydantic-settings = "^2.0.0"
+google-api-python-client = "^2.100.0"
+google-auth = "^2.25.0"
+google-auth-httplib2 = "^0.2.0"
+google-auth-oauthlib = "^1.2.0"
+google-generativeai = "^0.3.0"
+tenacity = "^8.2.0"
+python-dotenv = "^1.0.0"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
