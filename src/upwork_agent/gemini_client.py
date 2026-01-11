@@ -3,12 +3,23 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic import ValidationError
 from typing import Optional
 import json
+import logging
 from upwork_agent.schemas import (
     JobAnalysis, SlideDeckSpec,
     get_job_analysis_schema, get_slide_deck_schema
 )
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 class GeminiClientError(Exception):
+    pass
+
+class GeminiRateLimitError(GeminiClientError):
+    pass
+
+class GeminiQuotaExceededError(GeminiClientError):
     pass
 
 class GeminiClient:
@@ -21,11 +32,19 @@ class GeminiClient:
         """
         self.api_key = api_key
         self.model_name = model_name
-        genai.configure(api_key=api_key)
-        self.client = genai.GenerativeModel(model_name)
+        
+        try:
+            genai.configure(api_key=api_key)
+            self.client = genai.GenerativeModel(model_name)
+        except Exception as e:
+            logger.error(f"Failed to initialize Gemini client: {str(e)}")
+            raise GeminiClientError(f"Failed to initialize Gemini client: {str(e)}")
     
     def _parse_json_response(self, response_text: str):
-        """Extract JSON from response text."""
+        """Extract JSON from response text with robust error handling."""
+        if not response_text:
+            raise ValueError("Empty response from Gemini")
+        
         try:
             # Try to parse the response directly
             return json.loads(response_text)
@@ -34,9 +53,36 @@ class GeminiClient:
             import re
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
             if json_match:
-                return json.loads(json_match.group())
-            else:
-                raise ValueError(f"Could not extract JSON from response: {response_text[:200]}...")
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+            
+            # Last resort: try to fix common JSON issues
+            cleaned_text = response_text.replace('\n', '').replace('\r', '')
+            json_match = re.search(r'\{.*\}', cleaned_text, re.DOTALL)
+            if json_match:
+                try:
+                    return json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+            
+            raise ValueError(f"Could not extract valid JSON from response: {response_text[:200]}...")
+    
+    def _handle_api_error(self, error: Exception) -> None:
+        """Handle different types of API errors appropriately."""
+        error_str = str(error).lower()
+        
+        if "rate limit" in error_str or "too many requests" in error_str:
+            raise GeminiRateLimitError("Rate limit exceeded. Please wait before making another request.")
+        elif "quota" in error_str or "exceeded" in error_str:
+            raise GeminiQuotaExceededError("API quota exceeded. Please check your usage limits.")
+        elif "permission" in error_str or "forbidden" in error_str:
+            raise GeminiClientError("Permission denied. Check your API key and permissions.")
+        elif "invalid" in error_str and "key" in error_str:
+            raise GeminiClientError("Invalid API key. Please check your credentials.")
+        else:
+            raise GeminiClientError(f"Gemini API error: {str(error)}")
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate_job_analysis(self, job_text: str) -> JobAnalysis:
@@ -44,7 +90,11 @@ class GeminiClient:
         First call: Analyze the job post.
         Returns structured JobAnalysis.
         """
-        prompt = f"""Analyze this Upwork job posting and extract key insights.
+        if not job_text or len(job_text.strip()) < 50:
+            raise ValueError("Job text too short for analysis")
+        
+        try:
+            prompt = f"""Analyze this Upwork job posting and extract key insights.
 
 JOB POSTING:
 {job_text}
@@ -60,20 +110,30 @@ Focus on:
 - Budget and timeline signals
 - Any red flags or missing context
 """
-        
-        response = self.client.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
+            
+            response = self.client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,
+                )
             )
-        )
-        
-        try:
+            
+            if not response or not response.text:
+                raise ValueError("Empty response from Gemini")
+            
             response_text = response.text
             parsed_json = self._parse_json_response(response_text)
             return JobAnalysis.model_validate(parsed_json)
-        except (ValidationError, ValueError, AttributeError) as e:
-            raise GeminiClientError(f"Failed to parse job analysis: {str(e)}")
+            
+        except ValidationError as e:
+            logger.error(f"Validation error in job analysis: {str(e)}")
+            raise GeminiClientError(f"Invalid response format from Gemini: {str(e)}")
+        except ValueError as e:
+            logger.error(f"JSON parsing error in job analysis: {str(e)}")
+            raise GeminiClientError(f"Failed to parse Gemini response: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error in job analysis: {str(e)}")
+            self._handle_api_error(e)
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate_slide_deck(
@@ -85,16 +145,11 @@ Focus on:
         """
         Second call: Generate full 8-slide specification.
         Gemini creates 100% of content; no templates.
-        
-        Args:
-            job_analysis: JobAnalysis object from first call
-            relevant_projects: List of formatted project summaries (top 3)
-            tone_override: Override persona tone if user specified
         """
-        
-        tone = tone_override or job_analysis.persona
-        
-        prompt = f"""You are a world-class proposal writer. Generate an 8-slide vertical proposal deck.
+        try:
+            tone = tone_override or job_analysis.persona
+            
+            prompt = f"""You are a world-class proposal writer. Generate an 8-slide vertical proposal deck.
 
 CLIENT CONTEXT:
 Pain Points: {', '.join(job_analysis.pain_points)}
@@ -108,7 +163,7 @@ YOUR RELEVANT PROJECTS:
 
 TASK: Generate exactly 8 slides. Fill each with real, specific, persuasive content.
 
-Slide 1 (Title): "{'{client_name}'} Proposal" + compelling tagline addressing their #1 pain point
+Slide 1 (Title): "{{client_name}}" Proposal" + compelling tagline addressing their #1 pain point
 Slide 2 (Problem): Validate their pain points with specific proof from your projects
 Slide 3 (Your Approach): Detailed methodology/process for solving their problem
 Slide 4 (Case Study 1): Full results + metrics from one relevant project
@@ -129,20 +184,30 @@ Gemini, you are creating the ENTIRE proposal deck. Make it polished, compelling,
 Return ONLY valid JSON matching this schema:
 {get_slide_deck_schema()}
 """
-        
-        response = self.client.generate_content(
-            prompt,
-            generation_config=genai.types.GenerationConfig(
-                temperature=0.3,
+            
+            response = self.client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    temperature=0.3,
+                )
             )
-        )
-        
-        try:
+            
+            if not response or not response.text:
+                raise ValueError("Empty response from Gemini")
+            
             response_text = response.text
             parsed_json = self._parse_json_response(response_text)
             return SlideDeckSpec.model_validate(parsed_json)
-        except (ValidationError, ValueError, AttributeError) as e:
-            raise GeminiClientError(f"Failed to parse slide deck: {str(e)}")
+            
+        except ValidationError as e:
+            logger.error(f"Validation error in slide deck: {str(e)}")
+            raise GeminiClientError(f"Invalid response format from Gemini: {str(e)}")
+        except ValueError as e:
+            logger.error(f"JSON parsing error in slide deck: {str(e)}")
+            raise GeminiClientError(f"Failed to parse Gemini response: {str(e)}")
+        except Exception as e:
+            logger.error(f"Unexpected error in slide deck: {str(e)}")
+            self._handle_api_error(e)
     
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
     def generate_cover_letter(
@@ -153,7 +218,8 @@ Return ONLY valid JSON matching this schema:
         """
         Third call: Generate cover letter (text only, not structured output).
         """
-        prompt = f"""Write a compelling Upwork cover letter for this job.
+        try:
+            prompt = f"""Write a compelling Upwork cover letter for this job.
 
 CLIENT PAIN POINTS:
 {', '.join(job_analysis.pain_points)}
@@ -173,19 +239,36 @@ Requirements:
 
 Return ONLY the cover letter text. No metadata, no JSON, no explanations.
 """
-        
-        response = self.client.generate_content(prompt)
-        return response.text.strip()
+            
+            response = self.client.generate_content(prompt)
+            
+            if not response or not response.text:
+                raise ValueError("Empty response from Gemini")
+            
+            return response.text.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating cover letter: {str(e)}")
+            self._handle_api_error(e)
     
     def generate_screening_answers(self, job_analysis: JobAnalysis) -> dict[str, str]:
         """
         Auto-generate answers to common screening questions based on job analysis.
         """
-        common_questions = {
-            "What's your availability?": "Available immediately for this project.",
-            "What's your hourly rate or project fee?": "Rates vary based on scope; happy to discuss.",
-            "Can you work in our timezone?": "Yes, flexible with timezone and working hours.",
-            "Tell us about your experience with [tech].": f"Extensive experience with {', '.join(job_analysis.tech_stack[:2])} and related tech.",
-            "How do you handle revisions?": "Unlimited revisions until you're satisfied; quality is my priority.",
-        }
-        return common_questions
+        try:
+            common_questions = {
+                "What's your availability?": "Available immediately for this project.",
+                "What's your hourly rate or project fee?": "Rates vary based on scope; happy to discuss.",
+                "Can you work in our timezone?": "Yes, flexible with timezone and working hours.",
+                "Tell us about your experience with [tech].": f"Extensive experience with {', '.join(job_analysis.tech_stack[:2])} and related tech.",
+                "How do you handle revisions?": "Unlimited revisions until you're satisfied; quality is my priority.",
+            }
+            return common_questions
+        except Exception as e:
+            logger.error(f"Error generating screening answers: {str(e)}")
+            # Return basic answers as fallback
+            return {
+                "What's your availability?": "Available to discuss.",
+                "What's your hourly rate or project fee?": "Open to discuss rates.",
+                "Can you work in our timezone?": "Flexible with scheduling.",
+            }

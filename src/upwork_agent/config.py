@@ -31,44 +31,54 @@ def load_secrets() -> tuple[Optional[str], Optional[str]]:
         gcp_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
         return gemini_key, gcp_json
 
-def parse_gcp_credentials(credentials_str: str, project_id: str = None, client_email: str = None) -> dict:
-    """Parse Google service account credentials - accepts either JSON string or private key + additional fields."""
-    if not credentials_str:
-        raise ValueError("Service account credentials are empty or None")
+def init_session_state():
+    """Initialize all session state variables with defaults."""
+    defaults = {
+        "generating": False,
+        "current_proposal": None,
+        "job_analysis": None,
+        "slide_deck": None,
+        "cover_letter": None,
+        "screening_answers": None,
+        "error_message": None,
+        "api_call_count": 0,
+        "last_api_call": None,
+    }
     
-    try:
-        # Handle case where it might be a dict already
-        if isinstance(credentials_str, dict):
-            return credentials_str
-            
-        # Check if it's just a private key (single line or multi-line)
-        if '-----BEGIN PRIVATE KEY-----' in credentials_str or '-----BEGIN RSA PRIVATE KEY-----' in credentials_str:
-            # This is just the private key - we need additional fields
-            if not project_id or not client_email:
-                raise ValueError("Private key detected. Please provide Project ID and Client Email fields when using a private key.")
-            
-            # Construct full service account JSON
-            creds = {
-                "type": "service_account",
-                "project_id": project_id,
-                "private_key": credentials_str,
-                "client_email": client_email,
-                "client_id": "",  # Can be empty for basic auth
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token"
-            }
-            return creds
-        
-        # Try to parse as JSON
-        creds = json.loads(credentials_str)
-        
-        # Validate required fields
-        required_fields = ['type', 'project_id', 'private_key', 'client_email']
-        missing_fields = [field for field in required_fields if field not in creds]
-        if missing_fields:
-            raise ValueError(f"Missing required fields: {missing_fields}")
-        
-        return creds
-        
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON format in service account credentials: {e}")
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+def rate_limit_check(max_calls_per_minute: int = 10) -> bool:
+    """Check if user is rate limited."""
+    import time
+    
+    current_time = time.time()
+    last_call = st.session_state.get("last_api_call", 0)
+    call_count = st.session_state.get("api_call_count", 0)
+    
+    # Reset counter if more than a minute has passed
+    if current_time - last_call > 60:
+        st.session_state.api_call_count = 0
+        return False
+    
+    # Check if over limit
+    if call_count >= max_calls_per_minute:
+        return True
+    
+    return False
+
+def update_api_call_stats():
+    """Update API call statistics."""
+    import time
+    st.session_state.api_call_count += 1
+    st.session_state.last_api_call = time.time()
+
+def cleanup_session_state():
+    """Clean up large objects from session state to prevent memory leaks."""
+    # Keep only essential data
+    essential_keys = ["generating", "api_call_count", "last_api_call", "error_message"]
+    
+    for key in list(st.session_state.keys()):
+        if key not in essential_keys and key.startswith("temp_"):
+            del st.session_state[key]

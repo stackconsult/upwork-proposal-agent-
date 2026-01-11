@@ -1,9 +1,14 @@
 import streamlit as st
 import hashlib
-from upwork_agent.config import load_secrets
-from upwork_agent.gemini_client import GeminiClient, GeminiClientError
-from upwork_agent.store import init_db, log_run, get_all_projects, add_project
+import logging
+from upwork_agent.config import load_secrets, init_session_state, rate_limit_check, update_api_call_stats, cleanup_session_state
+from upwork_agent.gemini_client import GeminiClient, GeminiClientError, GeminiRateLimitError, GeminiQuotaExceededError
+from upwork_agent.store import init_db, log_run, get_all_projects, add_project, cleanup_old_runs
 from upwork_agent.relevance import score_projects, format_projects_for_gemini
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Initialize
 st.set_page_config(page_title="Upwork Proposal Agent", layout="wide")
@@ -12,10 +17,7 @@ st.markdown("*Powered by Gemini AI | Generate polished proposals in minutes*")
 
 # Initialize database and session state
 init_db()
-
-# Initialize session state
-if "generating" not in st.session_state:
-    st.session_state.generating = False
+init_session_state()
 
 # Sidebar: Settings + Project Management
 with st.sidebar:
@@ -39,6 +41,10 @@ with st.sidebar:
     ]
     selected_model = st.selectbox("Select Gemini Model", gemini_models)
     
+    # Rate limiting info
+    if st.session_state.get("api_call_count", 0) > 0:
+        st.info(f"API calls this minute: {st.session_state.api_call_count}")
+    
     st.divider()
     
     # Digital Twin Management
@@ -55,28 +61,41 @@ with st.sidebar:
         
         if st.button("💾 Save Project", key="save_project"):
             if project_name and project_desc and project_techs and project_outcomes:
-                add_project(
-                    name=project_name,
-                    description=project_desc,
-                    tech_tags=[t.strip() for t in project_techs.split(",")],
-                    outcomes=project_outcomes,
-                    vertical=project_vertical,
-                    portfolio_link=project_link
-                )
-                st.success("✅ Project saved!")
-                st.rerun()
+                try:
+                    add_project(
+                        name=project_name,
+                        description=project_desc,
+                        tech_tags=[t.strip() for t in project_techs.split(",")],
+                        outcomes=project_outcomes,
+                        vertical=project_vertical,
+                        portfolio_link=project_link
+                    )
+                    st.success("✅ Project saved!")
+                    # Clear form
+                    st.session_state.project_name = ""
+                    st.session_state.project_desc = ""
+                    st.session_state.project_techs = ""
+                    st.session_state.project_outcomes = ""
+                    st.session_state.project_vertical = ""
+                    st.session_state.project_link = ""
+                except Exception as e:
+                    st.error(f"❌ Failed to save project: {str(e)}")
             else:
                 st.error("❌ Please fill in required fields")
     
     # Show existing projects
-    projects = get_all_projects()
-    if projects:
-        st.subheader("📋 Existing Projects")
-        for project in projects:
-            with st.expander(f"📁 {project['name']}"):
-                st.write(f"**Description:** {project['description']}")
-                st.write(f"**Tech:** {', '.join(project['tech_tags'])}")
-                st.write(f"**Outcomes:** {project['outcomes']}")
+    try:
+        projects = get_all_projects()
+        if projects:
+            st.subheader("📋 Existing Projects")
+            for project in projects:
+                with st.expander(f"📁 {project['name']}"):
+                    st.write(f"**Description:** {project['description']}")
+                    st.write(f"**Tech:** {', '.join(project['tech_tags'])}")
+                    st.write(f"**Outcomes:** {project['outcomes']}")
+    except Exception as e:
+        st.warning("⚠️ Could not load projects")
+        projects = []
 
 # Main Interface
 col1, col2, col3 = st.columns([1.2, 1.2, 1.2])
@@ -100,13 +119,13 @@ with col2:
 with col3:
     st.subheader("📄 Proposal Output")
 
-# Generate Button
-st.divider()
-
 # Create placeholders for results
 placeholder_analysis = st.empty()
 placeholder_cover = st.empty()
 placeholder_pdf = st.empty()
+
+# Generate Button
+st.divider()
 
 if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=st.session_state.generating):
     # Validation
@@ -122,8 +141,18 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
         st.error("❌ Please paste a job description")
         st.stop()
     
+    if len(job_text.strip()) < 50:
+        st.error("❌ Job description too short for meaningful analysis")
+        st.stop()
+    
+    # Rate limiting check
+    if rate_limit_check():
+        st.error("❌ Rate limit exceeded. Please wait before making another request.")
+        st.stop()
+    
     # Start generation
     st.session_state.generating = True
+    update_api_call_stats()
     
     try:
         # Initialize Gemini client
@@ -132,6 +161,7 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
         # Step 1: Job Analysis
         with st.spinner("🔍 Analyzing job posting..."):
             job_analysis = gemini_client.generate_job_analysis(job_text)
+            st.session_state.job_analysis = job_analysis
         
         with placeholder_analysis.container():
             st.subheader("🧠 Job Analysis")
@@ -143,7 +173,8 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
                 scored_projects = score_projects(job_analysis)
                 relevant_projects = format_projects_for_gemini(scored_projects)
             except Exception as e:
-                st.warning(f"⚠️ Project matching failed: {str(e)} - using generic approach")
+                logger.warning(f"Project matching failed: {str(e)}")
+                st.warning("⚠️ Project matching failed - using generic approach")
                 relevant_projects = ["No specific projects available - will create general proposal"]
         
         # Step 3: Generate Slide Deck
@@ -154,13 +185,16 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
                 relevant_projects, 
                 tone_override=tone
             )
+            st.session_state.slide_deck = slide_deck
         
         # Step 4: Generate Cover Letter
         with st.spinner("✍️ Writing cover letter..."):
             cover_letter = gemini_client.generate_cover_letter(job_analysis, relevant_projects)
+            st.session_state.cover_letter = cover_letter
         
         # Step 5: Generate Screening Answers
         screening_answers = gemini_client.generate_screening_answers(job_analysis)
+        st.session_state.screening_answers = screening_answers
         
         # Display Results
         with placeholder_cover.container():
@@ -180,7 +214,11 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
             for i, slide in enumerate(slide_deck.slides, 1):
                 st.write(f"### Slide {i}: {slide.title}")
                 for section in slide.sections:
-                    st.write(f"- {section.content}")
+                    if isinstance(section.content, list):
+                        for item in section.content:
+                            st.write(f"- {item}")
+                    else:
+                        st.write(f"- {section.content}")
                 st.write("---")
             
             # Download as text file
@@ -191,7 +229,11 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
             for i, slide in enumerate(slide_deck.slides, 1):
                 slide_text += f"\n--- SLIDE {i}: {slide.title} ---\n"
                 for section in slide.sections:
-                    slide_text += f"- {section.content}\n"
+                    if isinstance(section.content, list):
+                        for item in section.content:
+                            slide_text += f"- {item}\n"
+                    else:
+                        slide_text += f"- {section.content}\n"
                 slide_text += "\n"
             
             st.download_button(
@@ -202,39 +244,69 @@ if st.button("🚀 Analyze & Generate Proposal", key="main_generate", disabled=s
             )
         
         # Log the run
-        log_run(
-            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
-            job_analysis_json=job_analysis.model_dump_json(),
-            proposal_json=slide_deck.model_dump_json(),
-            model_name=selected_model,
-            presentation_id="",
-            status="success"
-        )
+        try:
+            log_run(
+                job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
+                job_analysis_json=job_analysis.model_dump_json(),
+                proposal_json=slide_deck.model_dump_json(),
+                model_name=selected_model,
+                presentation_id="",
+                status="success"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to log run: {str(e)}")
         
         st.success("✅ Proposal generated successfully!")
         
+        # Cleanup session state to prevent memory leaks
+        cleanup_session_state()
+        
+    except GeminiRateLimitError as e:
+        st.error(f"❌ Rate limit exceeded: {str(e)}")
+        logger.warning(f"Rate limit hit: {str(e)}")
+    except GeminiQuotaExceededError as e:
+        st.error(f"❌ API quota exceeded: {str(e)}")
+        logger.error(f"Quota exceeded: {str(e)}")
     except GeminiClientError as e:
         st.error(f"❌ Gemini API Error: {str(e)}")
-        log_run(
-            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
-            job_analysis_json="",
-            proposal_json="",
-            model_name=selected_model,
-            presentation_id="",
-            status="failed",
-            error_message=str(e)
-        )
+        logger.error(f"Gemini error: {str(e)}")
+        try:
+            log_run(
+                job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
+                job_analysis_json="",
+                proposal_json="",
+                model_name=selected_model,
+                presentation_id="",
+                status="failed",
+                error_message=str(e)
+            )
+        except Exception:
+            pass
     except Exception as e:
         st.error(f"❌ Unexpected Error: {str(e)}")
-        log_run(
-            job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
-            job_analysis_json="",
-            proposal_json="",
-            model_name=selected_model,
-            presentation_id="",
-            status="failed",
-            error_message=str(e)
-        )
+        logger.error(f"Unexpected error: {str(e)}")
+        try:
+            log_run(
+                job_text_hash=hashlib.md5(job_text.encode()).hexdigest(),
+                job_analysis_json="",
+                proposal_json="",
+                model_name=selected_model,
+                presentation_id="",
+                status="failed",
+                error_message=str(e)
+            )
+        except Exception:
+            pass
     
     finally:
         st.session_state.generating = False
+
+# Footer with monitoring info
+st.divider()
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.caption("🔒 Your API keys are never stored")
+with col2:
+    st.caption("📊 Powered by Google Gemini AI")
+with col3:
+    st.caption("🚀 Built for Upwork success")
